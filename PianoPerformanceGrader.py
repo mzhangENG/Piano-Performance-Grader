@@ -42,8 +42,6 @@ def extract_frequency(audio):
     n_fft = 2048
     stft_result = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=None))
     frequencies = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
-    #stft_result = np.abs(librosa.stft(y, hop_length=None))
-    #frequencies = librosa.core.fft_frequencies(sr=sr, n_fft=stft_result.shape[0] * 2 - 1)
 
     dom_freq = []
     for frame in stft_result.T:
@@ -51,9 +49,6 @@ def extract_frequency(audio):
         index = np.argmax(frame)
         dominant_freq = frequencies[index]
         dom_freq.append(dominant_freq)
-    #for frame in stft_result.T: #green text works the same as current code, just wanted to experiment
-            #index = np.argmax(frame)  
-            #dom_freq.append(frequencies[index])
 
     return dom_freq
 
