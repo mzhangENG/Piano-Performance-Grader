@@ -168,14 +168,14 @@ def create_notes_arr(frequencies, audio):
             onset_frames = np.delete(onset_frames, i - x)
             x = x + 1
 
-    frames_to_be_removed = []
+  onset_frames_to_be_removed = []
     for i in range(1, len(onset_frames)):
         if (onset_frames[i] - 10 <= onset_frames[i - 1]):
-            frames_to_be_removed.append(i)
+            onset_frames_to_be_removed.append(i)
 
     x = 0
-    for i in range(0, len(frames_to_be_removed)):
-        onset_frames = np.delete(onset_frames, frames_to_be_removed[i] - x)
+    for i in range(0, len(onset_frames_to_be_removed)):
+        onset_frames = np.delete(onset_frames, onset_frames_to_be_removed[i] - x)
         x = x + 1
 
     for i in range(0, len(onset_frames)):
