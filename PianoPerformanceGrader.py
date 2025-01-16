@@ -2,6 +2,7 @@ import numpy as np
 import math
 import librosa
 import librosa.display
+from scipy.signal import find_peaks
 
 from tkinter import ttk
 from tkinter import *
@@ -42,6 +43,8 @@ def extract_frequency(audio):
     n_fft = 2048
     stft_result = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=None))
     frequencies = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
+    #stft_result = np.abs(librosa.stft(y, hop_length=None))
+    #frequencies = librosa.core.fft_frequencies(sr=sr, n_fft=stft_result.shape[0] * 2 - 1)
 
     dom_freq = []
     for frame in stft_result.T:
@@ -49,6 +52,9 @@ def extract_frequency(audio):
         index = np.argmax(frame)
         dominant_freq = frequencies[index]
         dom_freq.append(dominant_freq)
+    #for frame in stft_result.T: #green text works the same as current code, just wanted to experiment
+            #index = np.argmax(frame)  
+            #dom_freq.append(frequencies[index])
 
     return dom_freq
 
@@ -101,6 +107,22 @@ def remove_empty_space(frequencies):
     
     return (frequencies)
 
+def detect_onsets(y, sr):
+    # Compute short-time energy
+    frame_length = 2048
+    hop_length = 512
+    energy = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
+
+    # Smooth the energy signal
+    smoothed_energy = np.convolve(energy, np.ones(5) / 5, mode='same')
+
+    # Detect peaks using an adaptive threshold
+    peaks, _ = find_peaks(smoothed_energy, height=np.mean(smoothed_energy) * 1.5, distance=sr // 20)
+
+    # Convert peaks to onset frames
+    onset_frames = librosa.samples_to_frames(peaks * hop_length, hop_length=hop_length)
+    return onset_frames
+
 #creates the array of notes, with each note being calculated at the onset of a new sound, indicating a new note has been played
 def create_notes_arr(frequencies, audio):
     notes = []
@@ -146,6 +168,16 @@ def create_notes_arr(frequencies, audio):
             onset_frames = np.delete(onset_frames, i - x)
             x = x + 1
 
+    frames_to_be_removed = []
+    for i in range(1, len(onset_frames)):
+        if (onset_frames[i] - 10 <= onset_frames[i - 1]):
+            frames_to_be_removed.append(i)
+
+    x = 0
+    for i in range(0, len(frames_to_be_removed)):
+        onset_frames = np.delete(onset_frames, frames_to_be_removed[i] - x)
+        x = x + 1
+
     for i in range(0, len(onset_frames)):
         notes.append(frequencies[onset_frames[i]])
 
@@ -165,6 +197,9 @@ def get_note_accuracy(ideal, test):
 
     notes_ideal = create_notes_arr(dom_freq_ideal, ideal)
     notes_test = create_notes_arr(dom_freq_test, test)
+
+    print(f'ideal: ', notes_ideal)
+    print(f'test: ', notes_test)
 
     distance = levenshtein_distance(notes_ideal, notes_test)
     similarity = (1 - distance / max(len(notes_ideal), len(notes_test))) * 100
@@ -260,3 +295,4 @@ label = tk.Label(root, text=f"Total Accuracy: {total_accuracy: .2f}%", font=("He
 label.pack()
 
 root.mainloop()
+
