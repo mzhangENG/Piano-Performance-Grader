@@ -1,280 +1,350 @@
-import numpy as np
-import math
-import librosa
-import librosa.display
-
-from tkinter import ttk
-from tkinter import *
-
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Sequence
 
-file_path_ideal = None
-file_path_test = None
+import librosa
+import numpy as np
 
-def select_ideal_file():
-    global file_path_ideal
-    file_path_ideal = filedialog.askopenfilename(
-        title="Select an Audio File",
-        filetypes=[("Audio Files", "*.mp3 *.wav"), ("All Files", "*.*")]
-    )
-    if file_path_ideal:
-        messagebox.showinfo("Selected File", f"You selected: {file_path_ideal}")
-    else:
-        messagebox.showinfo("No File Selected", "Please select a file to analyze.")
 
-def select_test_file():
-    global file_path_test
-    file_path_test = filedialog.askopenfilename(
-        title="Select an Audio File",
-        filetypes=[("Audio Files", "*.mp3 *.wav"), ("All Files", "*.*")]
-    )
-    if file_path_test:
-        messagebox.showinfo("Selected File", f"You selected: {file_path_test}")
-    else:
-        messagebox.showinfo("No File Selected", "Please select a file to analyze.")
+PIANO_MIN_HZ = 27.5
+PIANO_MAX_HZ = 4186.01
+N_FFT = 2048
+HOP_LENGTH = 512
+MIN_ONSET_GAP_FRAMES = 10
+TEMPO_TOLERANCE_FRAMES = 5
 
-#extracts the dominant frequency present at each frame of an audio file
-def extract_frequency(audio):
-        
-    y, sr = librosa.load(audio)
 
-    n_fft = 2048
-    stft_result = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=None))
-    frequencies = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
-    #stft_result = np.abs(librosa.stft(y, hop_length=None))
-    #frequencies = librosa.core.fft_frequencies(sr=sr, n_fft=stft_result.shape[0] * 2 - 1)
+@dataclass
+class AnalysisResult:
+    note_accuracy: float
+    tempo_accuracy: float
+    overall_accuracy: float
+    ideal_notes: list[str]
+    test_notes: list[str]
+    ideal_tempo: list[int]
+    test_tempo: list[int]
 
-    dom_freq = []
-    for frame in stft_result.T:
 
-        index = np.argmax(frame)
-        dominant_freq = frequencies[index]
-        dom_freq.append(dominant_freq)
-    #for frame in stft_result.T: #green text works the same as current code, just wanted to experiment
-            #index = np.argmax(frame)  
-            #dom_freq.append(frequencies[index])
-
-    return dom_freq
-
-#given a frequency, this function returns a corresponding note and octave 
-def freq_to_note(freq):
-    notes = ['A', 'A#', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#']
-
-    note_number = 12 * math.log2(freq / 440) + 49  
-    note_number = round(note_number)
-        
-    note = (note_number - 1 ) % len(notes)
-    note = notes[note]
-    
-    octave = (note_number + 8 ) // len(notes)
-
-    return note#, octave
-
-#calculates the levenshtein distance between two strings, to provide accuracy measurement while accounting for misalignments
-def levenshtein_distance(a, b):
+def levenshtein_distance(a: Sequence, b: Sequence) -> int:
+    """Return edit distance between two sequences."""
     n, m = len(a), len(b)
     dp = [[0] * (m + 1) for _ in range(n + 1)]
 
     for i in range(n + 1):
-        for j in range(m + 1):
-            if i == 0:
-                dp[i][j] = j
-            elif j == 0:
-                dp[i][j] = i
-            elif a[i - 1] == b[j - 1]:
-                dp[i][j] = dp[i - 1][j - 1]
-            else:
-                dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+        dp[i][0] = i
+    for j in range(m + 1):
+        dp[0][j] = j
+
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            dp[i][j] = min(
+                dp[i - 1][j] + 1,
+                dp[i][j - 1] + 1,
+                dp[i - 1][j - 1] + cost
+            )
 
     return dp[n][m]
 
-#removes frequencies that are not within the bounds of the sounds a piano could make
-def remove_empty_space(frequencies):
-    
-    to_be_removed = []
-    for i in range(0, len(frequencies)):
-        freq = frequencies[i]
-        if (freq < 27.5 or freq > 4168):
-            to_be_removed.append(i)
 
-    x = 0
-    for i in range(0, len(to_be_removed)):
-        delete = to_be_removed[i] - x
-        del frequencies[delete]
-        x = x + 1
-    
-    return (frequencies)
+def similarity_percent(a: Sequence, b: Sequence) -> float:
+    """Convert edit distance into a similarity percentage."""
+    if not a and not b:
+        return 100.0
 
-#creates the array of notes, with each note being calculated at the onset of a new sound, indicating a new note has been played
-def create_notes_arr(frequencies, audio):
-    notes = []
-    y, sr = librosa.load(audio)
-    onset_env = librosa.onset.onset_strength(y=y)
-    onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env)
+    longest = max(len(a), len(b))
+    if longest == 0:
+        return 100.0
 
-    to_be_removed = []
-    for i in range(0, len(frequencies)):
-        freq = frequencies[i]
-        if (freq < 27.5 or freq > 4168):
-            to_be_removed.append(i)
+    distance = levenshtein_distance(a, b)
+    similarity = (1 - distance / longest) * 100
+    return max(0.0, similarity)
 
-    x = 0
-    for i in range(0, len(to_be_removed)):
-        comparison = to_be_removed[i]
-        for u in range(0, len(onset_frames)):
-            if (comparison == onset_frames[u - x]):
-                onset_frames = np.delete(onset_frames, u - x)
-                x = x + 1
 
-    for i in range(0, len(to_be_removed)):
-        comparison = to_be_removed[i]
-        for u in range(0, len(onset_frames)):
-            if (onset_frames[u] >= comparison):
-                onset_frames[u] = onset_frames[u] - 1
+def load_audio(path: str) -> tuple[np.ndarray, int]:
+    """Load an audio file in mono while keeping its original sample rate."""
+    return librosa.load(path, sr=None, mono=True)
 
-    x = 0
-    for i in range(0, len(onset_frames)):
-        if onset_frames[i] > len(frequencies):
-            onset_frames = np.delete(onset_frames, i - x)
-            x = x + 1
 
-    x = 0
-    for i in range(0, len(to_be_removed)):
-        delete = to_be_removed[i] - x
-        del frequencies[delete]
-        x = x + 1
+def extract_dominant_frequencies(y: np.ndarray, sr: int) -> np.ndarray:
+    """Return the dominant frequency at each STFT frame."""
+    stft = np.abs(librosa.stft(y, n_fft=N_FFT, hop_length=HOP_LENGTH))
+    frequency_bins = librosa.fft_frequencies(sr=sr, n_fft=N_FFT)
+    dominant_indices = np.argmax(stft, axis=0)
+    return frequency_bins[dominant_indices]
 
-    x = 0
-    for i in range(0, len(onset_frames)):
-        if onset_frames[i - x] > len(frequencies):
-            onset_frames = np.delete(onset_frames, i - x)
-            x = x + 1
 
-    onset_frames_to_be_removed = []
-    for i in range(1, len(onset_frames)):
-        if (onset_frames[i] - 10 <= onset_frames[i - 1]):
-            onset_frames_to_be_removed.append(i)
+def filter_onsets(onset_frames: np.ndarray, min_gap: int = MIN_ONSET_GAP_FRAMES) -> np.ndarray:
+    """Remove onsets that are too close together."""
+    if len(onset_frames) == 0:
+        return np.array([], dtype=int)
 
-    x = 0
-    for i in range(0, len(onset_frames_to_be_removed)):
-        onset_frames = np.delete(onset_frames, onset_frames_to_be_removed[i] - x)
-        x = x + 1
+    filtered = [int(onset_frames[0])]
+    for frame in onset_frames[1:]:
+        frame = int(frame)
+        if frame - filtered[-1] > min_gap:
+            filtered.append(frame)
 
-    for i in range(0, len(onset_frames)):
-        notes.append(frequencies[onset_frames[i]])
+    return np.array(filtered, dtype=int)
 
-    for i in range(0, len(notes)):
-        notes[i] = freq_to_note(notes[i])
-        
-    return (notes)
 
-#calculates the accuracy of notes between two audio files
-def get_note_accuracy(ideal, test):
+def detect_onsets(y: np.ndarray, sr: int) -> np.ndarray:
+    """Detect note onset frames."""
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP_LENGTH)
+    onset_frames = librosa.onset.onset_detect(
+        onset_envelope=onset_env,
+        sr=sr,
+        hop_length=HOP_LENGTH
+    )
+    return filter_onsets(onset_frames)
 
-    dom_freq_ideal = extract_frequency(ideal)
-    dom_freq_test = extract_frequency(test)
 
-    #dom_freq_ideal = remove_empty_space(dom_freq_ideal) #Removing empty spaces misaligns the frames of the frequency and onset_frames index
-    #dom_freq_test = remove_empty_space(dom_freq_test)
+def hz_to_note_name(freq: float) -> str:
+    """Convert a frequency in Hz to a note name like C4 or A#3."""
+    if freq <= 0:
+        raise ValueError("Frequency must be positive.")
 
-    notes_ideal = create_notes_arr(dom_freq_ideal, ideal)
-    notes_test = create_notes_arr(dom_freq_test, test)
+    midi_note = int(round(librosa.hz_to_midi(freq)))
+    return librosa.midi_to_note(midi_note, octave=True)
 
-    print(f'ideal: ', notes_ideal)
-    print(f'test: ', notes_test)
 
-    distance = levenshtein_distance(notes_ideal, notes_test)
-    similarity = (1 - distance / max(len(notes_ideal), len(notes_test))) * 100
-	
-    return similarity 
+def extract_note_sequence(path: str) -> list[str]:
+    """
+    Build a note sequence by:
+    1) finding onsets
+    2) getting dominant frequencies
+    3) converting valid frequencies near each onset into note names
+    """
+    y, sr = load_audio(path)
+    dominant_freqs = extract_dominant_frequencies(y, sr)
+    onset_frames = detect_onsets(y, sr)
 
-#creates an array of the distance between onset frames in an audio file, which is used as a metric for tempo
-def create_tempo_arr(audio):
-    tempo = []
-    y, sr = librosa.load(audio)
-    onset_env = librosa.onset.onset_strength(y=y)
-    onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env)
+    notes: list[str] = []
 
-    frames_to_be_removed = []
-    for i in range(1, len(onset_frames)):
-        if (onset_frames[i] - 10 <= onset_frames[i - 1]):
-            frames_to_be_removed.append(i)
+    for frame in onset_frames:
+        if frame >= len(dominant_freqs):
+            continue
 
-    x = 0
-    for i in range(0, len(frames_to_be_removed)):
-        onset_frames = np.delete(onset_frames, frames_to_be_removed[i] - x)
-        x = x + 1
+        start = max(0, frame - 2)
+        end = min(len(dominant_freqs), frame + 3)
+        window = dominant_freqs[start:end]
 
-    for i in range(1, len(onset_frames)):
-        distance = onset_frames[i] - onset_frames[i - 1]
-        tempo.append(distance)
-    
-    return tempo
+        valid_freqs = window[(window >= PIANO_MIN_HZ) & (window <= PIANO_MAX_HZ)]
+        if valid_freqs.size == 0:
+            continue
 
-#calculates tempo accuracy between arrays and curves grade for slight misalignments
-def get_tempo_accuracy(ideal, test):
-    ideal_tempo = create_tempo_arr(ideal)
-    test_tempo = create_tempo_arr(test)
+        representative_freq = float(np.median(valid_freqs))
+        notes.append(hz_to_note_name(representative_freq))
 
-    if (len(ideal_tempo) > len(test_tempo)):
-        shortest = test_tempo
-    else:
-        shortest = ideal_tempo
-    for i in range(0, len(shortest)): #applies grade curve for tempo if onset_frames are slightly off
-        if (ideal_tempo[i] - 5 < test_tempo[i] or ideal_tempo[i] + 5 > test_tempo[i]):
-            test_tempo[i] = ideal_tempo[i]
+    return notes
 
-    distance = levenshtein_distance(ideal_tempo, test_tempo)
-    similarity = (1 - distance / max(len(ideal_tempo), len(test_tempo))) * 100
 
-    return similarity
+def extract_tempo_intervals(path: str) -> list[int]:
+    """Return frame distances between detected onsets."""
+    y, sr = load_audio(path)
+    onset_frames = detect_onsets(y, sr)
 
-def get_total_accuracy(ideal, test):
-    global note_accuracy
-    global tempo_accuracy
-    global total_accuracy
+    if len(onset_frames) < 2:
+        return []
 
-    note_accuracy = get_note_accuracy(ideal, test)
-    tempo_accuracy = get_tempo_accuracy(ideal, test)
-    total_accuracy = note_accuracy * .5 + tempo_accuracy * .5
-    
-    print(f'Note Accuracy: {note_accuracy:.2f}%')
-    print(f'Tempo Accuracy: {tempo_accuracy:.2f}%')
-    print(f'Overall Accuracy: {total_accuracy:.2f}%')
-    return note_accuracy, tempo_accuracy, total_accuracy
+    return np.diff(onset_frames).astype(int).tolist()
 
-def close_window():
-    root.destroy()
 
-root = tk.Tk()
-root.title("Audio File Analyzer")
+def apply_tempo_tolerance(reference: list[int], candidate: list[int], tolerance: int) -> list[int]:
+    """
+    Snap candidate tempo intervals to the reference when they are close enough.
+    This gives small timing mistakes partial credit.
+    """
+    adjusted = list(candidate)
+    for i in range(min(len(reference), len(candidate))):
+        if abs(reference[i] - candidate[i]) <= tolerance:
+            adjusted[i] = reference[i]
+    return adjusted
 
-ideal_audio = tk.Label(root, text = "Insert your audio file of the ideal performance.")
-ideal_audio.pack(pady=30, padx=25)
-select_button = tk.Button(root, text="Select Ideal Audio File", command=select_ideal_file)
-select_button.pack(pady=29, padx=25)
 
-ideal_audio = tk.Label(root, text = "Insert your audio file of the performance to be tested.")
-ideal_audio.pack(pady=30, padx=100)
-select_button = tk.Button(root, text="Select Test Audio File", command=select_test_file)
-select_button.pack(pady=30, padx=100)
+def analyze_performance(ideal_path: str, test_path: str) -> AnalysisResult:
+    """Run note and tempo analysis between two recordings."""
+    ideal_notes = extract_note_sequence(ideal_path)
+    test_notes = extract_note_sequence(test_path)
 
-next_button = tk.Button(root, text="GRADE!", command=close_window)
-next_button.pack(pady=10)
+    ideal_tempo = extract_tempo_intervals(ideal_path)
+    test_tempo_raw = extract_tempo_intervals(test_path)
+    test_tempo = apply_tempo_tolerance(
+        ideal_tempo,
+        test_tempo_raw,
+        TEMPO_TOLERANCE_FRAMES
+    )
 
-root.mainloop()
+    note_accuracy = similarity_percent(ideal_notes, test_notes)
+    tempo_accuracy = similarity_percent(ideal_tempo, test_tempo)
+    overall_accuracy = (note_accuracy + tempo_accuracy) / 2
 
-get_total_accuracy(file_path_ideal, file_path_test)
+    return AnalysisResult(
+        note_accuracy=note_accuracy,
+        tempo_accuracy=tempo_accuracy,
+        overall_accuracy=overall_accuracy,
+        ideal_notes=ideal_notes,
+        test_notes=test_notes,
+        ideal_tempo=ideal_tempo,
+        test_tempo=test_tempo,
+    )
 
-root = tk.Tk()
-root.title("Audio File Analyzer")
 
-label = tk.Label(root, text=f"Note Accuracy: {note_accuracy: .2f}%", font=("Helvetica", 16))
-label.pack()
-label = tk.Label(root, text=f"Tempo Accuracy: {tempo_accuracy: .2f}%", font=("Helvetica", 16))
-label.pack()
-label = tk.Label(root, text=f"Total Accuracy: {total_accuracy: .2f}%", font=("Helvetica", 16))
-label.pack()
+class AudioAnalyzerApp(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("Performance Audio Analyzer")
+        self.geometry("700x540")
+        self.resizable(False, False)
 
-root.mainloop()
+        self.ideal_path = tk.StringVar()
+        self.test_path = tk.StringVar()
+        self.status_text = tk.StringVar(value="Select two audio files to begin.")
+
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        main = ttk.Frame(self, padding=20)
+        main.pack(fill="both", expand=True)
+
+        title = ttk.Label(
+            main,
+            text="Performance Audio Analyzer",
+            font=("Helvetica", 18, "bold")
+        )
+        title.pack(pady=(0, 10))
+
+        description = ttk.Label(
+            main,
+            text="Compare a reference recording and a test recording using note and tempo similarity.",
+            wraplength=600,
+            justify="center"
+        )
+        description.pack(pady=(0, 20))
+
+        self._build_file_picker(
+            parent=main,
+            label_text="Reference Audio File",
+            path_var=self.ideal_path,
+            command=self.select_ideal_file
+        )
+
+        self._build_file_picker(
+            parent=main,
+            label_text="Test Audio File",
+            path_var=self.test_path,
+            command=self.select_test_file
+        )
+
+        ttk.Button(main, text="Analyze Performance", command=self.run_analysis).pack(pady=18)
+
+        ttk.Label(main, textvariable=self.status_text).pack(pady=(0, 14))
+
+        results_frame = ttk.LabelFrame(main, text="Results", padding=16)
+        results_frame.pack(fill="x", pady=8)
+
+        self.note_label = ttk.Label(results_frame, text="Note Accuracy: --", font=("Helvetica", 12))
+        self.note_label.pack(anchor="w", pady=3)
+
+        self.tempo_label = ttk.Label(results_frame, text="Tempo Accuracy: --", font=("Helvetica", 12))
+        self.tempo_label.pack(anchor="w", pady=3)
+
+        self.total_label = ttk.Label(results_frame, text="Overall Accuracy: --", font=("Helvetica", 12, "bold"))
+        self.total_label.pack(anchor="w", pady=3)
+
+        details_frame = ttk.LabelFrame(main, text="Detected Sequences", padding=16)
+        details_frame.pack(fill="both", expand=True, pady=10)
+
+        self.details_text = tk.Text(details_frame, height=10, wrap="word")
+        self.details_text.pack(fill="both", expand=True)
+        self.details_text.insert("1.0", "Analysis details will appear here.")
+        self.details_text.config(state="disabled")
+
+    def _build_file_picker(
+        self,
+        parent: ttk.Frame,
+        label_text: str,
+        path_var: tk.StringVar,
+        command
+    ) -> None:
+        frame = ttk.Frame(parent)
+        frame.pack(fill="x", pady=8)
+
+        ttk.Label(frame, text=label_text).pack(anchor="w")
+        entry = ttk.Entry(frame, textvariable=path_var, width=65)
+        entry.pack(side="left", padx=(0, 8), pady=6)
+        ttk.Button(frame, text="Browse", command=command).pack(side="left")
+
+    def select_ideal_file(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select Reference Audio File",
+            filetypes=[("Audio Files", "*.mp3 *.wav"), ("All Files", "*.*")]
+        )
+        if path:
+            self.ideal_path.set(path)
+
+    def select_test_file(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select Test Audio File",
+            filetypes=[("Audio Files", "*.mp3 *.wav"), ("All Files", "*.*")]
+        )
+        if path:
+            self.test_path.set(path)
+
+    def update_details_box(self, result: AnalysisResult) -> None:
+        details = (
+            f"Ideal Notes: {result.ideal_notes}\n\n"
+            f"Test Notes: {result.test_notes}\n\n"
+            f"Ideal Tempo Intervals: {result.ideal_tempo}\n\n"
+            f"Test Tempo Intervals: {result.test_tempo}"
+        )
+
+        self.details_text.config(state="normal")
+        self.details_text.delete("1.0", tk.END)
+        self.details_text.insert("1.0", details)
+        self.details_text.config(state="disabled")
+
+    def run_analysis(self) -> None:
+        ideal = self.ideal_path.get().strip()
+        test = self.test_path.get().strip()
+
+        if not ideal or not test:
+            messagebox.showwarning("Missing File", "Please select both audio files first.")
+            return
+
+        if not Path(ideal).exists() or not Path(test).exists():
+            messagebox.showerror("File Error", "One or both selected files could not be found.")
+            return
+
+        try:
+            self.status_text.set("Analyzing audio...")
+            self.update_idletasks()
+
+            result = analyze_performance(ideal, test)
+
+            self.note_label.config(text=f"Note Accuracy: {result.note_accuracy:.2f}%")
+            self.tempo_label.config(text=f"Tempo Accuracy: {result.tempo_accuracy:.2f}%")
+            self.total_label.config(text=f"Overall Accuracy: {result.overall_accuracy:.2f}%")
+
+            self.update_details_box(result)
+
+            self.status_text.set("Analysis complete.")
+            self.update_idletasks()
+
+            messagebox.showinfo(
+                "Analysis Results",
+                f"Note Accuracy: {result.note_accuracy:.2f}%\n"
+                f"Tempo Accuracy: {result.tempo_accuracy:.2f}%\n"
+                f"Overall Accuracy: {result.overall_accuracy:.2f}%"
+            )
+
+        except Exception as exc:
+            self.status_text.set("Analysis failed.")
+            messagebox.showerror("Analysis Error", f"Something went wrong:\n\n{exc}")
+
+
+if __name__ == "__main__":
+    app = AudioAnalyzerApp()
+    app.mainloop()
